@@ -1,0 +1,149 @@
+//the esp32 board library version is 2.0.11 and firebase for esp8266 and esp32 by mobizt version is 4.4.17
+
+//including necessary libraries
+#include <DFRobot_MAX30102.h>
+#include <WiFiManager.h>
+#if defined(ESP32)
+  #include <WiFi.h>
+#elif defined(ESP8266)
+  #include <ESP8266WiFi.h>
+#endif
+#include <Firebase_ESP_Client.h>
+#include "addons/TokenHelper.h"
+#include "addons/RTDBHelper.h"
+
+#define API_KEY "*****"          //from firebase
+#define USER_EMAIL "*****"       //from firebase
+#define USER_PASSWORD "*****"    //from firebase
+#define DATABASE_URL "*****"     //from firebase
+
+#define RESET_WIFI_PIN 0  // GPIO for resetting WiFi credentials
+#define wifi_led 2
+
+FirebaseData fbdo;
+FirebaseAuth auth;
+FirebaseConfig config;
+
+String uid;
+String databasePath;
+String onlineStatusPath;
+String hr;
+String sp;
+
+WiFiManager wifiManager;
+
+DFRobot_MAX30102 particleSensor;
+
+unsigned long sendDataPrevMillis = 0;
+unsigned long timerDelay = 500;
+
+void resetWiFi()
+{
+  wifiManager.resetSettings();
+  ESP.restart();
+}
+
+void initWiFiManager()
+{
+  pinMode(RESET_WIFI_PIN, INPUT_PULLUP);
+  unsigned long pressStart = millis();
+  while (digitalRead(RESET_WIFI_PIN) == LOW)
+  {
+    if (millis() - pressStart > 5000)
+    {
+      resetWiFi();
+    }
+  }
+  wifiManager.autoConnect("MyHeartAP");
+}
+
+void sendInt(String path, int value)
+{
+  Firebase.RTDB.setInt(&fbdo, path.c_str(), value);
+}
+
+void sendFloat(String path, float value)
+{
+  Firebase.RTDB.setFloat(&fbdo, path.c_str(), value);
+}
+
+void updateOnlineStatus()
+{
+  Firebase.RTDB.setInt(&fbdo, onlineStatusPath.c_str(), 1);
+}
+
+void wifi_led_status()
+{
+  if(WiFi.status() == WL_CONNECTED)
+  {
+    digitalWrite(wifi_led, HIGH);
+  }
+  else
+  {
+    digitalWrite(wifi_led, LOW);
+  }
+}
+
+void setup()
+{
+  Serial.begin(115200);
+  initWiFiManager();
+
+  pinMode(wifi_led, OUTPUT);
+  digitalWrite(wifi_led, LOW);
+  
+  config.api_key = API_KEY;
+  auth.user.email = USER_EMAIL;
+  auth.user.password = USER_PASSWORD;
+  config.database_url = DATABASE_URL;
+
+  Firebase.reconnectWiFi(true);
+  Firebase.begin(&config, &auth);
+
+  while ((auth.token.uid) == "")
+  {
+    delay(1000);
+  }
+
+  uid = auth.token.uid.c_str();
+  databasePath = "/devices/my_heart";
+  onlineStatusPath = databasePath + "/online_status";
+  hr = databasePath + "/heart_rate";
+  sp = databasePath + "/spo";
+  
+  updateOnlineStatus();
+
+  while (!particleSensor.begin())
+  {
+    //Serial.println("MAX30102 was not found");
+    //delay(1000);
+  }
+
+  particleSensor.sensorConfiguration(/*ledBrightness=*/50, /*sampleAverage=*/SAMPLEAVG_4, \
+                        /*ledMode=*/MODE_MULTILED, /*sampleRate=*/SAMPLERATE_100, \
+                        /*pulseWidth=*/PULSEWIDTH_411, /*adc4'Range=*/ADCRANGE_16384);
+}
+
+int32_t SPO2; //SPO2
+int8_t SPO2Valid; //Flag to display if SPO2 calculation is valid
+int32_t heartRate; //Heart-rate
+int8_t heartRateValid; //Flag to display if heart-rate calculation is valid 
+
+void loop()
+{
+  wifi_led_status();
+  if (Firebase.ready() && (millis() - sendDataPrevMillis > timerDelay))
+  {
+    sendDataPrevMillis = millis();
+    updateOnlineStatus();
+
+    particleSensor.heartrateAndOxygenSaturation(/**SPO2=*/&SPO2, /**SPO2Valid=*/&SPO2Valid, /**heartRate=*/&heartRate, /**heartRateValid=*/&heartRateValid);
+
+    sendInt(hr, heartRate);
+    sendInt(sp, SPO2);
+  }
+  if (Firebase.isTokenExpired())
+  {
+    Firebase.refreshToken(&config);
+  }
+}
